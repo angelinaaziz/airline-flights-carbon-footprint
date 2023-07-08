@@ -25,7 +25,7 @@ docker run -it carbon-footprint-cli
 
 This will start the CLI tool. 
 You will first be prompted to enter your API key which you can get from Carbon Interface. 
-Then you will be prompted to enter the details of your flight, including the number of passengers, departure and destination airports. 
+Then you will be prompted to enter the details of your flight, including the number of passengers, departure and destination airports etc.
 The tool will then return an estimate of the carbon emissions associated with that flight.
 
 ## Testing
