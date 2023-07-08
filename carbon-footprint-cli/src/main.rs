@@ -3,7 +3,10 @@ use rpassword::read_password;
 use serde_derive::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::io::{self, Write};
+use std::time::Duration;
+use prettytable::{Table, Row, row, Cell, format};
 
 #[derive(Serialize, Deserialize)]
 struct Leg {
@@ -66,6 +69,20 @@ impl ApiClient {
     ) -> Result<String, CliError> {
         let json_body = serde_json::to_string(request)?;
 
+        let pb = ProgressBar::new_spinner();
+
+        let style = ProgressStyle::default_spinner()
+            .tick_chars("/|\\- ")
+            .template("{spinner} {wide_msg}");
+
+        match style {
+            Ok(st) => pb.set_style(st),
+            Err(e) => eprintln!("Error setting progress bar style: {}", e),
+        }
+
+        pb.set_message("Estimating...");
+        pb.enable_steady_tick(Duration::from_millis(5));
+
         let response = self
             .client
             .post(&format!("{}/api/v1/estimates", self.base_url))
@@ -74,6 +91,8 @@ impl ApiClient {
             .body(json_body)
             .send()
             .await?;
+
+        pb.finish_and_clear();
 
         response.text().await.map_err(CliError::NetworkError)
     }
@@ -170,7 +189,7 @@ fn get_flight_details() -> (u32, Vec<Leg>) {
         );
 
         let cabin_class = get_user_input(
-            "Enter the cabin class (optional, defaults to 'economy'): ",
+            "Enter the cabin class (economy or premium): ",
             "Invalid input. Cabin class can be 'economy' or 'premium'.",
             |input| input.is_empty() || ["economy", "premium"].contains(&input),
         );
@@ -212,19 +231,36 @@ async fn main() {
 
     match make_estimates_request(&api_client, &request, &api_key).await {
         Ok(response) => {
+            let mut table = Table::new();
+            table.set_format(*format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);
+            table.set_titles(row!["Metric", "Value", "Unit"]);
+
             if let Some(data) = response.data {
-                // Process and display the response
                 let estimate = data.attributes;
-                println!("Estimated carbon footprint:");
-                println!("Carbon emissions in grams: {} g", estimate.carbon_g);
-                println!("Carbon emissions in kg: {} kg", estimate.carbon_kg);
-                println!(
-                    "Distance: {} {}",
-                    estimate.distance_value, estimate.distance_unit
-                );
+                table.add_row(Row::new(vec![
+                    Cell::new("Carbon emissions (g)"),
+                    Cell::new(&format!("{:.2}", estimate.carbon_g)),
+                    Cell::new("g"),
+                ]));
+                table.add_row(Row::new(vec![
+                    Cell::new("Carbon emissions (kg)"),
+                    Cell::new(&format!("{:.2}", estimate.carbon_kg)),
+                    Cell::new("kg"),
+                ]));
+                table.add_row(Row::new(vec![
+                    Cell::new("Distance"),
+                    Cell::new(&format!("{:.2}", estimate.distance_value)),
+                    Cell::new(&estimate.distance_unit),
+                ]));
             } else {
                 eprintln!("Error: Missing response data");
             }
+
+            // Print the table to stdout
+            println!("\n");
+            println!("Estimated carbon emissions for your trip are:");
+            println!("\n");
+            table.printstd();
         }
         Err(err) => {
             eprintln!("Error: {}", err);
