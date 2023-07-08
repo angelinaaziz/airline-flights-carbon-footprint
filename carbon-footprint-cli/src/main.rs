@@ -1,7 +1,9 @@
 use reqwest::Client;
+use rpassword::read_password;
 use serde_derive::{Deserialize, Serialize};
-use std::io;
-use std::io::Write;
+use std::error::Error;
+use std::fmt;
+use std::io::{self, Write};
 
 #[derive(Serialize, Deserialize)]
 struct Leg {
@@ -44,83 +46,171 @@ struct EstimateAttributes {
     distance_value: f32,
 }
 
-async fn make_estimates_request(request: &FlightEstimateRequest) -> Result<FlightEstimateResponse, Box<dyn std::error::Error>> {
-    let client = Client::new();
-    let json_body = serde_json::to_string(request)?;
+struct ApiClient {
+    client: Client,
+    base_url: String,
+}
 
-    let response = client
-        .post("https://www.carboninterface.com/api/v1/estimates")
-        .header("Authorization", format!("Bearer {}", "API_KEY_REMOVED_FOR_SECURITY"))
-        .header("Content-Type", "application/json")
-        .body(json_body)
-        .send()
-        .await?;
-
-    let response_body = response.text().await?;
-
-    let response_json: FlightEstimateResponse = serde_json::from_str(&response_body)?;
-
-    if let Some(error_message) = response_json.message {
-        return Err(error_message.into());
+impl ApiClient {
+    fn new(client: Client, base_url: &str) -> Self {
+        Self {
+            client,
+            base_url: base_url.into(),
+        }
     }
 
-    if let Some(data) = response_json.data {
-        Ok(FlightEstimateResponse { data: Some(data), ..Default::default() })
-    } else {
-        let error_message = match serde_json::from_str::<serde_json::Value>(&response_body) {
-            Ok(json) => {
-                if let Some(error_data) = json.get("errors") {
-                    if let Some(errors) = error_data.as_array() {
-                        if !errors.is_empty() {
-                            let messages: Vec<String> = errors
-                                .iter()
-                                .filter_map(|error| error.get("detail").and_then(|detail| detail.as_str()))
-                                .map(|detail| detail.to_string())
-                                .collect();
-                            return Err(messages.join("; ").into());
-                        }
-                    }
-                }
-                "Missing response data".to_string()
+    async fn post_estimate(
+        &self,
+        request: &FlightEstimateRequest,
+        api_key: &str,
+    ) -> Result<String, CliError> {
+        let json_body = serde_json::to_string(request)?;
+
+        let response = self
+            .client
+            .post(&format!("{}/api/v1/estimates", self.base_url))
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .body(json_body)
+            .send()
+            .await?;
+
+        response.text().await.map_err(CliError::NetworkError)
+    }
+}
+
+#[derive(Debug)]
+enum CliError {
+    NetworkError(reqwest::Error),
+    UnexpectedResponseFormat(serde_json::Error),
+    ApiError(String),
+}
+
+impl fmt::Display for CliError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CliError::NetworkError(err) => write!(f, "Network error: {}", err),
+            CliError::UnexpectedResponseFormat(err) => {
+                write!(f, "Unexpected response format: {}", err)
             }
-            Err(_) => "Missing response data".to_string(),
-        };
-        Err(error_message.into())
+            CliError::ApiError(err) => write!(f, "API error: {}", err),
+        }
     }
+}
+
+impl Error for CliError {}
+
+impl From<reqwest::Error> for CliError {
+    fn from(err: reqwest::Error) -> Self {
+        CliError::NetworkError(err)
+    }
+}
+
+impl From<serde_json::Error> for CliError {
+    fn from(err: serde_json::Error) -> Self {
+        CliError::UnexpectedResponseFormat(err)
+    }
+}
+
+async fn make_estimates_request(
+    api_client: &ApiClient,
+    request: &FlightEstimateRequest,
+    api_key: &str,
+) -> Result<FlightEstimateResponse, CliError> {
+    let response_body = api_client.post_estimate(request, api_key).await?;
+
+    let response_json: Result<FlightEstimateResponse, _> = serde_json::from_str(&response_body);
+    match response_json {
+        Ok(mut response) => {
+            if let Some(error_message) = response.message.take() {
+                return Err(CliError::ApiError(error_message));
+            }
+
+            if let Some(data) = response.data.take() {
+                Ok(FlightEstimateResponse {
+                    data: Some(data),
+                    ..Default::default()
+                })
+            } else {
+                Err(CliError::ApiError("Missing response data".to_string()))
+            }
+        }
+        Err(err) => Err(CliError::UnexpectedResponseFormat(err)),
+    }
+}
+
+fn get_flight_details() -> (u32, Vec<Leg>) {
+    let passengers = get_user_input(
+        "Enter the number of passengers: ",
+        "Invalid input. Please enter a valid number.",
+        |input| input.parse::<u32>().is_ok(),
+    ).parse::<u32>().unwrap(); // Assuming the user inputs a valid integer
+
+    let number_of_legs = get_user_input(
+        "Enter the number of legs: ",
+        "Invalid input. Please enter a valid number.",
+        |input| input.parse::<usize>().is_ok(),
+    ).parse::<usize>().unwrap(); // Assuming the user inputs a valid integer
+
+    let mut legs: Vec<Leg> = Vec::new();
+
+    for i in 0..number_of_legs {
+        println!("Enter details for leg {}:", i + 1);
+
+        let departure_airport = get_user_input(
+            "Enter the departure airport IATA code: ",
+            "Invalid input. IATA codes should be exactly 3 uppercase letters.",
+            |input| input.chars().all(|c| c.is_ascii_uppercase()) && input.len() == 3,
+        );
+
+        let destination_airport = get_user_input(
+            "Enter the destination airport IATA code: ",
+            "Invalid input. IATA codes should be exactly 3 uppercase letters.",
+            |input| input.chars().all(|c| c.is_ascii_uppercase()) && input.len() == 3,
+        );
+
+        let cabin_class = get_user_input(
+            "Enter the cabin class (optional, defaults to 'economy'): ",
+            "Invalid input. Cabin class can be 'economy' or 'premium'.",
+            |input| input.is_empty() || ["economy", "premium"].contains(&input),
+        );
+
+        let leg = Leg {
+            departure_airport,
+            destination_airport,
+            cabin_class: Some(if cabin_class.is_empty() { "economy".to_string() } else { cabin_class }),
+        };
+
+        legs.push(leg);
+    }
+
+    (passengers, legs)
 }
 
 #[tokio::main]
 async fn main() {
     print_banner();
 
-    // Get user input for the flight details
-    let passengers = get_user_input("Enter the number of passengers: ", |input| {
-        input.parse::<f32>().is_ok()
-    });
-    let departure_airport = get_user_input("Enter the departure airport IATA code: ", |input| {
-        input.chars().all(|c| c.is_ascii_uppercase())
-    });
-    let destination_airport =
-        get_user_input("Enter the destination airport IATA code: ", |input| {
-            input.chars().all(|c| c.is_ascii_uppercase())
-        });
+    print!("Please enter your API key: ");
+    io::stdout().flush().unwrap();
 
-    // Create the leg for the flight
-    let leg = Leg {
-        departure_airport,
-        destination_airport,
-        cabin_class: None, // Set cabin class if desired
-    };
+    // Read the API key securely, without displaying it in the console
+    let api_key = read_password().expect("Failed to read API key");
+
+    let (passengers, legs) = get_flight_details();
+
     // Create the request payload
     let request = FlightEstimateRequest {
         estimate_type: String::from("flight"),
-        passengers: passengers.parse().unwrap(),
-        legs: vec![leg],
-        distance_unit: None, // Set distance unit if desired
+        passengers,
+        legs,
+        distance_unit: None,
     };
 
-// Make the API call and handle the response
-    match make_estimates_request(&request).await {
+    let client = Client::new();
+    let api_client = ApiClient::new(client, "https://www.carboninterface.com");
+
+    match make_estimates_request(&api_client, &request, &api_key).await {
         Ok(response) => {
             if let Some(data) = response.data {
                 // Process and display the response
@@ -128,7 +218,10 @@ async fn main() {
                 println!("Estimated carbon footprint:");
                 println!("Carbon emissions in grams: {} g", estimate.carbon_g);
                 println!("Carbon emissions in kg: {} kg", estimate.carbon_kg);
-                println!("Distance: {} {}", estimate.distance_value, estimate.distance_unit);
+                println!(
+                    "Distance: {} {}",
+                    estimate.distance_value, estimate.distance_unit
+                );
             } else {
                 eprintln!("Error: Missing response data");
             }
@@ -139,7 +232,7 @@ async fn main() {
     }
 }
 
-fn get_user_input(prompt: &str, validator: impl Fn(&str) -> bool) -> String {
+fn get_user_input(prompt: &str, error_message: &str, validator: impl Fn(&str) -> bool) -> String {
     loop {
         print!("{}", prompt);
         io::stdout().flush().unwrap();
@@ -151,11 +244,10 @@ fn get_user_input(prompt: &str, validator: impl Fn(&str) -> bool) -> String {
         if !input.is_empty() && validator(input) {
             return input.to_string();
         } else {
-            println!("Invalid input. Please try again.");
+            println!("{}", error_message);
         }
     }
 }
-
 fn print_banner() {
     let banner = r#"██╗    ██╗███████╗██╗      ██████╗ ██████╗ ███╗   ███╗███████╗    ████████╗ ██████╗      █████╗ ███╗   ██╗ ██████╗ ███████╗██╗     ██╗███╗   ██╗ █████╗ ███████╗
 ██║    ██║██╔════╝██║     ██╔════╝██╔═══██╗████╗ ████║██╔════╝    ╚══██╔══╝██╔═══██╗    ██╔══██╗████╗  ██║██╔════╝ ██╔════╝██║     ██║████╗  ██║██╔══██╗██╔════╝
@@ -182,7 +274,7 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn test_make_estimates_request_success() {
+    async fn test_make_estimates_for_single_leg_request_success() {
         // Start a WireMock server
         let server = MockServer::start().await;
 
@@ -191,7 +283,7 @@ mod tests {
             data: Some(EstimateData {
                 attributes: EstimateAttributes {
                     carbon_g: 99911700.0,
-                    carbon_lb: 220267.6,
+                    carbon_lb: 267.6,
                     carbon_kg: 99911.7,
                     carbon_mt: 99.91,
                     distance_unit: "km".to_string(),
@@ -210,18 +302,19 @@ mod tests {
         let request = FlightEstimateRequest {
             estimate_type: "flight".to_string(),
             passengers: 100,
-            legs: vec![
-                Leg {
-                    departure_airport: "LHR".to_string(),
-                    destination_airport: "JFK".to_string(),
-                    cabin_class: None,
-                },
-            ],
+            legs: vec![Leg {
+                departure_airport: "LHR".to_string(),
+                destination_airport: "JFK".to_string(),
+                cabin_class: None,
+            }],
             distance_unit: None,
         };
 
+        // Create the API client with the mock server's URI
+        let api_client = ApiClient::new(Client::new(), &server.uri());
+
         // Make the request to the mock server
-        let response = make_estimates_request(&request).await;
+        let response = make_estimates_request(&api_client, &request, "").await;
 
         // Check the response
         assert!(response.is_ok());
@@ -229,16 +322,15 @@ mod tests {
         assert!(response.data.is_some());
         let estimate = response.data.unwrap().attributes;
         assert_eq!(estimate.carbon_g, 99911700.0);
-        assert_eq!(estimate.carbon_lb, 220267.6);
+        assert_eq!(estimate.carbon_lb, 267.6);
         assert_eq!(estimate.carbon_kg, 99911.7);
         assert_eq!(estimate.carbon_mt, 99.91);
         assert_eq!(estimate.distance_unit, "km");
         assert_eq!(estimate.distance_value, 5660.34);
-
     }
 
     #[tokio::test]
-    async fn test_make_estimates_request_error() {
+    async fn test_make_estimates_for_single_leg_request_error() {
         // Start a WireMock server
         let server = MockServer::start().await;
 
@@ -257,22 +349,150 @@ mod tests {
         let request = FlightEstimateRequest {
             estimate_type: "flight".to_string(),
             passengers: 100,
-            legs: vec![
-                Leg {
-                    departure_airport: "LHR".to_string(),
-                    destination_airport: "XYZ".to_string(), // Invalid airport code
-                    cabin_class: None,
-                },
-            ],
+            legs: vec![Leg {
+                departure_airport: "LHR".to_string(),
+                destination_airport: "XYZ".to_string(), // Invalid airport code
+                cabin_class: None,
+            }],
             distance_unit: None,
         };
 
+        // Create the API client with the mock server's URI
+        let api_client = ApiClient::new(Client::new(), &server.uri());
+
         // Make the request to the mock server
-        let response = make_estimates_request(&request).await;
+        let response = make_estimates_request(&api_client, &request, "").await;
 
         // Check the response
         assert!(response.is_err());
         let error = response.err().unwrap().to_string();
-        assert_eq!(error, "Validation failed: Legs require valid airport codes. These IATA codes are invalid: [\"XYZ\"]");
+        assert_eq!(
+            error,
+            "API error: Validation failed: Legs require valid airport codes"
+        );
+    }
+    #[tokio::test]
+    async fn test_make_estimates_request_multiple_legs_success() {
+        // Start a WireMock server
+        let server = MockServer::start().await;
+
+        // Set up a mock response for a successful request
+        let mock_response = FlightEstimateResponse {
+            data: Some(EstimateData {
+                attributes: EstimateAttributes {
+                    carbon_g: 99911700.0,
+                    carbon_lb: 267.6,
+                    carbon_kg: 99911.7,
+                    carbon_mt: 99.91,
+                    distance_unit: "km".to_string(),
+                    distance_value: 5660.34,
+                },
+            }),
+            message: None,
+        };
+        Mock::given(method("POST"))
+            .and(path("/api/v1/estimates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
+            .mount(&server)
+            .await;
+
+        // Create a test request with multiple legs
+        let request = FlightEstimateRequest {
+            estimate_type: "flight".to_string(),
+            passengers: 100,
+            legs: vec![
+                Leg {
+                    departure_airport: "LHR".to_string(),
+                    destination_airport: "JFK".to_string(),
+                    cabin_class: None,
+                },
+                Leg {
+                    departure_airport: "JFK".to_string(),
+                    destination_airport: "LHR".to_string(),
+                    cabin_class: None,
+                }
+            ],
+            distance_unit: None,
+        };
+
+        // Create the API client with the mock server's URI
+        let api_client = ApiClient::new(Client::new(), &server.uri());
+
+        // Make the request to the mock server
+        let response = make_estimates_request(&api_client, &request, "").await;
+
+        // Check the response
+        assert!(response.is_ok());
+        let response = response.unwrap();
+        assert!(response.data.is_some());
+        let estimate = response.data.unwrap().attributes;
+        assert_eq!(estimate.carbon_g, 99911700.0);
+        assert_eq!(estimate.carbon_lb, 267.6);
+        assert_eq!(estimate.carbon_kg, 99911.7);
+        assert_eq!(estimate.carbon_mt, 99.91);
+        assert_eq!(estimate.distance_unit, "km");
+        assert_eq!(estimate.distance_value, 5660.34);
+    }
+    #[tokio::test]
+    async fn test_make_estimates_request_different_cabin_classes() {
+        // Start a WireMock server
+        let server = MockServer::start().await;
+
+        // Set up a mock response for a successful request
+        let mock_response = FlightEstimateResponse {
+            data: Some(EstimateData {
+                attributes: EstimateAttributes {
+                    carbon_g: 99911700.0,
+                    carbon_lb: 267.6,
+                    carbon_kg: 99911.7,
+                    carbon_mt: 99.91,
+                    distance_unit: "km".to_string(),
+                    distance_value: 5660.34,
+                },
+            }),
+            message: None,
+        };
+        Mock::given(method("POST"))
+            .and(path("/api/v1/estimates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
+            .mount(&server)
+            .await;
+
+        // Create a test request with different cabin classes
+        let request = FlightEstimateRequest {
+            estimate_type: "flight".to_string(),
+            passengers: 100,
+            legs: vec![
+                Leg {
+                    departure_airport: "LHR".to_string(),
+                    destination_airport: "JFK".to_string(),
+                    cabin_class: Some("economy".to_string()),
+                },
+                Leg {
+                    departure_airport: "JFK".to_string(),
+                    destination_airport: "LHR".to_string(),
+                    cabin_class: Some("business".to_string()),
+                }
+            ],
+            distance_unit: None,
+        };
+
+        // Create the API client with the mock server's URI
+        let api_client = ApiClient::new(Client::new(), &server.uri());
+
+        // Make the request to the mock server
+        let response = make_estimates_request(&api_client, &request, "").await;
+
+        // Check the response
+        assert!(response.is_ok());
+        let response = response.unwrap();
+        assert!(response.data.is_some());
+        let estimate = response.data.unwrap().attributes;
+        assert_eq!(estimate.carbon_g, 99911700.0);
+        assert_eq!(estimate.carbon_lb, 267.6);
+        assert_eq!(estimate.carbon_kg, 99911.7);
+        assert_eq!(estimate.carbon_mt, 99.91);
+        assert_eq!(estimate.distance_unit, "km");
+        assert_eq!(estimate.distance_value, 5660.34);
     }
 }
