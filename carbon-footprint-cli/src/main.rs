@@ -1,12 +1,12 @@
+use indicatif::{ProgressBar, ProgressStyle};
+use prettytable::{format, row, Cell, Row, Table};
 use reqwest::Client;
 use rpassword::read_password;
 use serde_derive::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
-use indicatif::{ProgressBar, ProgressStyle};
 use std::io::{self, Write};
 use std::time::Duration;
-use prettytable::{Table, Row, row, Cell, format};
 
 #[derive(Serialize, Deserialize)]
 struct Leg {
@@ -158,18 +158,28 @@ async fn make_estimates_request(
     }
 }
 
-fn get_flight_details() -> (u32, Vec<Leg>) {
+fn get_flight_details() -> (u32, Vec<Leg>, Option<String>) {
     let passengers = get_user_input(
         "Enter the number of passengers: ",
         "Invalid input. Please enter a valid number.",
         |input| input.parse::<u32>().is_ok(),
-    ).parse::<u32>().unwrap(); // Assuming the user inputs a valid integer
+    )
+    .parse::<u32>()
+    .unwrap(); // Assuming the user inputs a valid integer
 
     let number_of_legs = get_user_input(
         "Enter the number of legs: ",
         "Invalid input. Please enter a valid number.",
         |input| input.parse::<usize>().is_ok(),
-    ).parse::<usize>().unwrap(); // Assuming the user inputs a valid integer
+    )
+    .parse::<usize>()
+    .unwrap(); // Assuming the user inputs a valid integer
+
+    let distance_unit = get_user_input(
+        "Enter the distance unit (km or mi): ",
+        "Invalid input. Distance unit can be 'km' or 'mi'.",
+        |input| input.is_empty() || ["km", "mi"].contains(&input),
+    );
 
     let mut legs: Vec<Leg> = Vec::new();
 
@@ -197,13 +207,17 @@ fn get_flight_details() -> (u32, Vec<Leg>) {
         let leg = Leg {
             departure_airport,
             destination_airport,
-            cabin_class: Some(if cabin_class.is_empty() { "economy".to_string() } else { cabin_class }),
+            cabin_class: Some(if cabin_class.is_empty() {
+                "economy".to_string()
+            } else {
+                cabin_class
+            }),
         };
 
         legs.push(leg);
     }
 
-    (passengers, legs)
+    (passengers, legs, Some(distance_unit))
 }
 
 #[tokio::main]
@@ -216,16 +230,15 @@ async fn main() {
     // Read the API key securely, without displaying it in the console
     let api_key = read_password().expect("Failed to read API key");
 
-    let (passengers, legs) = get_flight_details();
+    let (passengers, legs, distance_unit) = get_flight_details();
 
     // Create the request payload
     let request = FlightEstimateRequest {
         estimate_type: String::from("flight"),
         passengers,
         legs,
-        distance_unit: None,
+        distance_unit,
     };
-
     let client = Client::new();
     let api_client = ApiClient::new(client, "https://www.carboninterface.com");
 
@@ -285,19 +298,13 @@ fn get_user_input(prompt: &str, error_message: &str, validator: impl Fn(&str) ->
     }
 }
 fn print_banner() {
-    let banner = r#"██╗    ██╗███████╗██╗      ██████╗ ██████╗ ███╗   ███╗███████╗    ████████╗ ██████╗      █████╗ ███╗   ██╗ ██████╗ ███████╗██╗     ██╗███╗   ██╗ █████╗ ███████╗
-██║    ██║██╔════╝██║     ██╔════╝██╔═══██╗████╗ ████║██╔════╝    ╚══██╔══╝██╔═══██╗    ██╔══██╗████╗  ██║██╔════╝ ██╔════╝██║     ██║████╗  ██║██╔══██╗██╔════╝
-██║ █╗ ██║█████╗  ██║     ██║     ██║   ██║██╔████╔██║█████╗         ██║   ██║   ██║    ███████║██╔██╗ ██║██║  ███╗█████╗  ██║     ██║██╔██╗ ██║███████║███████╗
-██║███╗██║██╔══╝  ██║     ██║     ██║   ██║██║╚██╔╝██║██╔══╝         ██║   ██║   ██║    ██╔══██║██║╚██╗██║██║   ██║██╔══╝  ██║     ██║██║╚██╗██║██╔══██║╚════██║
-╚███╔███╔╝███████╗███████╗╚██████╗╚██████╔╝██║ ╚═╝ ██║███████╗       ██║   ╚██████╔╝    ██║  ██║██║ ╚████║╚██████╔╝███████╗███████╗██║██║ ╚████║██║  ██║███████║
- ╚══╝╚══╝ ╚══════╝╚══════╝ ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝       ╚═╝    ╚═════╝     ╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚══════╝╚══════╝╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝╚══════╝
- ██████╗ █████╗ ██████╗ ██████╗  ██████╗ ███╗   ██╗    ███████╗ ██████╗  ██████╗ ████████╗██████╗ ██████╗ ██╗███╗   ██╗████████╗     ██████╗██╗     ██╗██╗
-██╔════╝██╔══██╗██╔══██╗██╔══██╗██╔═══██╗████╗  ██║    ██╔════╝██╔═══██╗██╔═══██╗╚══██╔══╝██╔══██╗██╔══██╗██║████╗  ██║╚══██╔══╝    ██╔════╝██║     ██║██║
-██║     ███████║██████╔╝██████╔╝██║   ██║██╔██╗ ██║    █████╗  ██║   ██║██║   ██║   ██║   ██████╔╝██████╔╝██║██╔██╗ ██║   ██║       ██║     ██║     ██║██║
-██║     ██╔══██║██╔══██╗██╔══██╗██║   ██║██║╚██╗██║    ██╔══╝  ██║   ██║██║   ██║   ██║   ██╔═══╝ ██╔══██╗██║██║╚██╗██║   ██║       ██║     ██║     ██║╚═╝
-╚██████╗██║  ██║██║  ██║██████╔╝╚██████╔╝██║ ╚████║    ██║     ╚██████╔╝╚██████╔╝   ██║   ██║     ██║  ██║██║██║ ╚████║   ██║       ╚██████╗███████╗██║██╗
- ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝  ╚═════╝ ╚═╝  ╚═══╝    ╚═╝      ╚═════╝  ╚═════╝    ╚═╝   ╚═╝     ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝   ╚═╝        ╚═════╝╚══════╝╚═╝╚═╝
- "#;
+    let banner = r#"
+
+-------WELCOME TO THE CARBON FOOTPRINT CLI-------
+                   __|__
+            --------(_)--------
+              O  O       O  O
+"#;
     println!("{}", banner);
 }
 
@@ -309,7 +316,14 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
     };
 
-    fn create_mock_response(carbon_g: f32, carbon_lb: f32, carbon_kg: f32, carbon_mt: f32, distance_unit: &str, distance_value: f32) -> FlightEstimateResponse {
+    fn create_mock_response(
+        carbon_g: f32,
+        carbon_lb: f32,
+        carbon_kg: f32,
+        carbon_mt: f32,
+        distance_unit: &str,
+        distance_value: f32,
+    ) -> FlightEstimateResponse {
         FlightEstimateResponse {
             data: Some(EstimateData {
                 attributes: EstimateAttributes {
@@ -438,7 +452,7 @@ mod tests {
                     departure_airport: "JFK".to_string(),
                     destination_airport: "LHR".to_string(),
                     cabin_class: None,
-                }
+                },
             ],
             distance_unit: None,
         };
@@ -488,7 +502,7 @@ mod tests {
                     departure_airport: "JFK".to_string(),
                     destination_airport: "LHR".to_string(),
                     cabin_class: Some("business".to_string()),
-                }
+                },
             ],
             distance_unit: None,
         };
@@ -510,5 +524,56 @@ mod tests {
         assert_eq!(estimate.carbon_mt, 99.91);
         assert_eq!(estimate.distance_unit, "km");
         assert_eq!(estimate.distance_value, 5660.34);
+    }
+
+    #[tokio::test]
+    async fn test_make_estimates_request_different_distance_units() {
+        // Start a WireMock server
+        let server = MockServer::start().await;
+
+        // Set up a mock response for a successful request
+        let mock_response = create_mock_response(99911700.0, 267.6, 99911.7, 99.91, "mi", 3512.0);
+        Mock::given(method("POST"))
+            .and(path("/api/v1/estimates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
+            .mount(&server)
+            .await;
+
+        // Create a test request with different distance units
+        let request = FlightEstimateRequest {
+            estimate_type: "flight".to_string(),
+            passengers: 100,
+            legs: vec![
+                Leg {
+                    departure_airport: "LHR".to_string(),
+                    destination_airport: "JFK".to_string(),
+                    cabin_class: None,
+                },
+                Leg {
+                    departure_airport: "JFK".to_string(),
+                    destination_airport: "LHR".to_string(),
+                    cabin_class: None,
+                },
+            ],
+            distance_unit: Some("mi".to_string()),
+        };
+
+        // Create the API client with the mock server's URI
+        let api_client = ApiClient::new(Client::new(), &server.uri());
+
+        // Make the request to the mock server
+        let response = make_estimates_request(&api_client, &request, "").await;
+
+        // Check the response
+        assert!(response.is_ok());
+        let response = response.unwrap();
+        assert!(response.data.is_some());
+        let estimate = response.data.unwrap().attributes;
+        assert_eq!(estimate.carbon_g, 99911700.0);
+        assert_eq!(estimate.carbon_lb, 267.6);
+        assert_eq!(estimate.carbon_kg, 99911.7);
+        assert_eq!(estimate.carbon_mt, 99.91);
+        assert_eq!(estimate.distance_unit, "mi");
+        assert_eq!(estimate.distance_value, 3512.0);
     }
 }
