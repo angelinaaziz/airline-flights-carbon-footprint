@@ -26,7 +26,7 @@ struct FlightEstimateRequest {
     distance_unit: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Debug)]
 struct FlightEstimateResponse {
     #[serde(default)] // Handle missing "data" field
     data: Option<EstimateData>,
@@ -34,12 +34,12 @@ struct FlightEstimateResponse {
     message: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct EstimateData {
     attributes: EstimateAttributes,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct EstimateAttributes {
     carbon_g: f32,
     carbon_lb: f32,
@@ -476,6 +476,56 @@ mod tests {
         assert_eq!(estimate.distance_value, 5660.34);
     }
     #[tokio::test]
+    async fn test_make_estimates_request_multiple_legs_error() {
+        // Start a WireMock server
+        let server = MockServer::start().await;
+
+        // Set up a mock response for an error request
+        let error_response = FlightEstimateResponse {
+            message: Some("Validation failed: Legs require valid airport codes".to_string()),
+            ..Default::default()
+        };
+        Mock::given(method("POST"))
+            .and(path("/api/v1/estimates"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(&error_response))
+            .mount(&server)
+            .await;
+
+        // Create a test request with multiple legs
+        let request = FlightEstimateRequest {
+            estimate_type: "flight".to_string(),
+            passengers: 100,
+            legs: vec![
+                Leg {
+                    departure_airport: "LHR".to_string(),
+                    destination_airport: "XYZ".to_string(), // Invalid airport code
+                    cabin_class: None,
+                },
+                Leg {
+                    departure_airport: "JFK".to_string(),
+                    destination_airport: "LHR".to_string(),
+                    cabin_class: None,
+                },
+            ],
+            distance_unit: None,
+        };
+
+        // Create the API client with the mock server's URI
+        let api_client = ApiClient::new(Client::new(), &server.uri());
+
+        // Make the request to the mock server
+        let response = make_estimates_request(&api_client, &request, "").await;
+
+        // Check the response
+        assert!(response.is_err());
+        let error = response.err().unwrap().to_string();
+        assert_eq!(
+            error,
+            "API error: Validation failed: Legs require valid airport codes"
+        );
+    }
+
+    #[tokio::test]
     async fn test_make_estimates_request_different_cabin_classes() {
         // Start a WireMock server
         let server = MockServer::start().await;
@@ -575,5 +625,54 @@ mod tests {
         assert_eq!(estimate.carbon_mt, 99.91);
         assert_eq!(estimate.distance_unit, "mi");
         assert_eq!(estimate.distance_value, 3512.0);
+    }
+    #[tokio::test]
+    async fn test_make_estimates_request_different_passenger_counts() {
+        // Start a WireMock server
+        let server = MockServer::start().await;
+
+        // Set up a mock response for a successful request
+        let mock_response = create_mock_response(199823400.0, 535.2, 199823.4, 199.82, "km", 5660.34);
+        Mock::given(method("POST"))
+            .and(path("/api/v1/estimates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
+            .mount(&server)
+            .await;
+
+        let request = FlightEstimateRequest {
+            estimate_type: "flight".to_string(),
+            passengers: 200,
+            legs: vec![
+                Leg {
+                    departure_airport: "LHR".to_string(),
+                    destination_airport: "JFK".to_string(),
+                    cabin_class: None,
+                },
+                Leg {
+                    departure_airport: "JFK".to_string(),
+                    destination_airport: "LHR".to_string(),
+                    cabin_class: None,
+                },
+            ],
+            distance_unit: None,
+        };
+
+        // Create the API client with the mock server's URI
+        let api_client = ApiClient::new(Client::new(), &server.uri());
+
+        // Make the request to the mock server
+        let response = make_estimates_request(&api_client, &request, "").await;
+
+        // Check the response
+        assert!(response.is_ok());
+        let response = response.unwrap();
+        assert!(response.data.is_some());
+        let estimate = response.data.unwrap().attributes;
+        assert_eq!(estimate.carbon_g, 199823400.0);
+        assert_eq!(estimate.carbon_lb, 535.2);
+        assert_eq!(estimate.carbon_kg, 199823.4);
+        assert_eq!(estimate.carbon_mt, 199.82);
+        assert_eq!(estimate.distance_unit, "km");
+        assert_eq!(estimate.distance_value, 5660.34);
     }
 }
