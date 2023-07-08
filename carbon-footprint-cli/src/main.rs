@@ -309,25 +309,29 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
     };
 
+    fn create_mock_response(carbon_g: f32, carbon_lb: f32, carbon_kg: f32, carbon_mt: f32, distance_unit: &str, distance_value: f32) -> FlightEstimateResponse {
+        FlightEstimateResponse {
+            data: Some(EstimateData {
+                attributes: EstimateAttributes {
+                    carbon_g,
+                    carbon_lb,
+                    carbon_kg,
+                    carbon_mt,
+                    distance_unit: distance_unit.to_string(),
+                    distance_value,
+                },
+            }),
+            message: None,
+        }
+    }
+
     #[tokio::test]
     async fn test_make_estimates_for_single_leg_request_success() {
         // Start a WireMock server
         let server = MockServer::start().await;
 
         // Set up a mock response for a successful request
-        let mock_response = FlightEstimateResponse {
-            data: Some(EstimateData {
-                attributes: EstimateAttributes {
-                    carbon_g: 99911700.0,
-                    carbon_lb: 267.6,
-                    carbon_kg: 99911.7,
-                    carbon_mt: 99.91,
-                    distance_unit: "km".to_string(),
-                    distance_value: 5660.34,
-                },
-            }),
-            message: None,
-        };
+        let mock_response = create_mock_response(99911700.0, 267.6, 99911.7, 99.91, "km", 5660.34);
         Mock::given(method("POST"))
             .and(path("/api/v1/estimates"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
@@ -413,19 +417,7 @@ mod tests {
         let server = MockServer::start().await;
 
         // Set up a mock response for a successful request
-        let mock_response = FlightEstimateResponse {
-            data: Some(EstimateData {
-                attributes: EstimateAttributes {
-                    carbon_g: 99911700.0,
-                    carbon_lb: 267.6,
-                    carbon_kg: 99911.7,
-                    carbon_mt: 99.91,
-                    distance_unit: "km".to_string(),
-                    distance_value: 5660.34,
-                },
-            }),
-            message: None,
-        };
+        let mock_response = create_mock_response(99911700.0, 267.6, 99911.7, 99.91, "km", 5660.34);
         Mock::given(method("POST"))
             .and(path("/api/v1/estimates"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
@@ -475,19 +467,7 @@ mod tests {
         let server = MockServer::start().await;
 
         // Set up a mock response for a successful request
-        let mock_response = FlightEstimateResponse {
-            data: Some(EstimateData {
-                attributes: EstimateAttributes {
-                    carbon_g: 99911700.0,
-                    carbon_lb: 267.6,
-                    carbon_kg: 99911.7,
-                    carbon_mt: 99.91,
-                    distance_unit: "km".to_string(),
-                    distance_value: 5660.34,
-                },
-            }),
-            message: None,
-        };
+        let mock_response = create_mock_response(99911700.0, 267.6, 99911.7, 99.91, "km", 5660.34);
         Mock::given(method("POST"))
             .and(path("/api/v1/estimates"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
