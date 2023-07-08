@@ -7,6 +7,7 @@ use std::error::Error;
 use std::fmt;
 use std::io::{self, Write};
 use std::time::Duration;
+use colored::*;
 
 #[derive(Serialize, Deserialize)]
 struct Leg {
@@ -81,7 +82,7 @@ impl ApiClient {
         }
 
         pb.set_message("Estimating...");
-        pb.enable_steady_tick(Duration::from_millis(5));
+        pb.enable_steady_tick(Duration::from_millis(50));
 
         let response = self
             .client
@@ -94,6 +95,10 @@ impl ApiClient {
 
         pb.finish_and_clear();
 
+        if response.status() == 401 {
+            return Err(CliError::InvalidApiKey);
+        }
+
         response.text().await.map_err(CliError::NetworkError)
     }
 }
@@ -103,6 +108,7 @@ enum CliError {
     NetworkError(reqwest::Error),
     UnexpectedResponseFormat(serde_json::Error),
     ApiError(String),
+    InvalidApiKey,
 }
 
 impl fmt::Display for CliError {
@@ -113,6 +119,7 @@ impl fmt::Display for CliError {
                 write!(f, "Unexpected response format: {}", err)
             }
             CliError::ApiError(err) => write!(f, "API error: {}", err),
+            CliError::InvalidApiKey => write!(f, "Invalid API key."),
         }
     }
 }
@@ -160,47 +167,47 @@ async fn make_estimates_request(
 
 fn get_flight_details() -> (u32, Vec<Leg>, Option<String>) {
     let passengers = get_user_input(
-        "Enter the number of passengers: ",
-        "Invalid input. Please enter a valid number.",
+        "👥 Enter the number of passengers: ",
+        "❌ Invalid input. Please enter a valid number.",
         |input| input.parse::<u32>().is_ok(),
     )
-    .parse::<u32>()
-    .unwrap(); // Assuming the user inputs a valid integer
+        .parse::<u32>()
+        .unwrap(); // Assuming the user inputs a valid integer
 
     let number_of_legs = get_user_input(
-        "Enter the number of legs: ",
-        "Invalid input. Please enter a valid number.",
+        "✈️ Enter the number of legs: ",
+        "❌ Invalid input. Please enter a valid number.",
         |input| input.parse::<usize>().is_ok(),
     )
-    .parse::<usize>()
-    .unwrap(); // Assuming the user inputs a valid integer
+        .parse::<usize>()
+        .unwrap(); // Assuming the user inputs a valid integer
 
     let distance_unit = get_user_input(
-        "Enter the distance unit (km or mi): ",
-        "Invalid input. Distance unit can be 'km' or 'mi'.",
+        "📏 Enter the distance unit (km or mi): ",
+        "❌ Invalid input. Distance unit can be 'km' or 'mi'.",
         |input| input.is_empty() || ["km", "mi"].contains(&input),
     );
 
     let mut legs: Vec<Leg> = Vec::new();
 
     for i in 0..number_of_legs {
-        println!("Enter details for leg {}:", i + 1);
+        println!("🔢 Enter details for leg {}:", i + 1);
 
         let departure_airport = get_user_input(
-            "Enter the departure airport IATA code: ",
-            "Invalid input. IATA codes should be exactly 3 uppercase letters.",
+            "🛫 Enter the departure airport IATA code: ",
+            "❌ Invalid input. IATA codes should be exactly 3 uppercase letters.",
             |input| input.chars().all(|c| c.is_ascii_uppercase()) && input.len() == 3,
         );
 
         let destination_airport = get_user_input(
-            "Enter the destination airport IATA code: ",
-            "Invalid input. IATA codes should be exactly 3 uppercase letters.",
+            "🛬 Enter the destination airport IATA code: ",
+            "❌ Invalid input. IATA codes should be exactly 3 uppercase letters.",
             |input| input.chars().all(|c| c.is_ascii_uppercase()) && input.len() == 3,
         );
 
         let cabin_class = get_user_input(
-            "Enter the cabin class (economy or premium): ",
-            "Invalid input. Cabin class can be 'economy' or 'premium'.",
+            "💺 Enter the cabin class (economy or premium): ",
+            "❌ Invalid input. Cabin class can be 'economy' or 'premium'.",
             |input| input.is_empty() || ["economy", "premium"].contains(&input),
         );
 
@@ -224,7 +231,7 @@ fn get_flight_details() -> (u32, Vec<Leg>, Option<String>) {
 async fn main() {
     print_banner();
 
-    print!("Please enter your API key: ");
+    print!("🔑 Please enter your API key: ");
     io::stdout().flush().unwrap();
 
     // Read the API key securely, without displaying it in the console
@@ -232,7 +239,6 @@ async fn main() {
 
     let (passengers, legs, distance_unit) = get_flight_details();
 
-    // Create the request payload
     let request = FlightEstimateRequest {
         estimate_type: String::from("flight"),
         passengers,
@@ -245,35 +251,39 @@ async fn main() {
     match make_estimates_request(&api_client, &request, &api_key).await {
         Ok(response) => {
             let mut table = Table::new();
-            table.set_format(*format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);
-            table.set_titles(row!["Metric", "Value", "Unit"]);
+            table.set_format(*format::consts::FORMAT_CLEAN);
+            table.set_titles(row![bc=> "Metric".bold(), "Value".bold(), "Unit".bold()]);
 
             if let Some(data) = response.data {
                 let estimate = data.attributes;
+                let max_metric_length = 22;
                 table.add_row(Row::new(vec![
-                    Cell::new("Carbon emissions (g)"),
+                    Cell::new(&format!("{:<max_width$}", "Carbon emissions (g)", max_width = max_metric_length)),
                     Cell::new(&format!("{:.2}", estimate.carbon_g)),
-                    Cell::new("g"),
+                    Cell::new(&"g".italic().magenta().to_string()),
                 ]));
                 table.add_row(Row::new(vec![
-                    Cell::new("Carbon emissions (kg)"),
+                    Cell::new(&format!("{:<max_width$}", "Carbon emissions (kg)", max_width = max_metric_length)),
                     Cell::new(&format!("{:.2}", estimate.carbon_kg)),
-                    Cell::new("kg"),
+                    Cell::new(&"kg".italic().magenta().to_string()),
                 ]));
                 table.add_row(Row::new(vec![
-                    Cell::new("Distance"),
+                    Cell::new(&format!("{:<max_width$}", "Distance", max_width = max_metric_length)),
                     Cell::new(&format!("{:.2}", estimate.distance_value)),
-                    Cell::new(&estimate.distance_unit),
+                    Cell::new(&estimate.distance_unit.italic().magenta().to_string()),
                 ]));
             } else {
                 eprintln!("Error: Missing response data");
             }
 
-            // Print the table to stdout
             println!("\n");
-            println!("Estimated carbon emissions for your trip are:");
-            println!("\n");
+            println!("{}", "🌍 Estimated carbon emissions for your trip are: 🌍".bold().green());
+
             table.printstd();
+
+            println!("\n");
+            println!("{}", "🌳 Please consider offsetting your carbon footprint. 🌳".bold().green());
+            println!("{}", "Learn more at: https://carbonfund.org/how-to-offset-the-carbon-footprint-of-flying/".underline());
         }
         Err(err) => {
             eprintln!("Error: {}", err);
@@ -293,7 +303,7 @@ fn get_user_input(prompt: &str, error_message: &str, validator: impl Fn(&str) ->
         if !input.is_empty() && validator(input) {
             return input.to_string();
         } else {
-            println!("{}", error_message);
+            eprintln!("{}", error_message);
         }
     }
 }
