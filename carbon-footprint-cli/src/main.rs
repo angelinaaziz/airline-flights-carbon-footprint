@@ -29,9 +29,9 @@ struct FlightEstimateRequest {
 
 #[derive(Serialize, Deserialize, Default, Debug)]
 struct FlightEstimateResponse {
-    #[serde(default)] // Handle missing "data" field
+    #[serde(default)]
     data: Option<EstimateData>,
-    #[serde(default)] // Handle error response
+    #[serde(default)]
     message: Option<String>,
 }
 
